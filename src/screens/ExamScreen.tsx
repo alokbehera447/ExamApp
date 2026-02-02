@@ -496,7 +496,7 @@ export default function ExamScreen() {
                   color={isFlagged ? "#EF4444" : "#64748B"}
                 />
                 <Text style={[styles.flagButtonText, isFlagged && styles.flagButtonTextActive]}>
-                  {isFlagged ? "Flagged" : "Flag for Review"}
+                  {isFlagged ? "Flagged" : "Review"}
                 </Text>
               </TouchableOpacity>
 
@@ -516,7 +516,7 @@ export default function ExamScreen() {
                     style={[styles.navButton, styles.navButtonNext]}
                     onPress={() => navigateToQuestion(index + 1)}
                   >
-                    <Text style={styles.navButtonTextNext}>Next Question</Text>
+                    <Text style={styles.navButtonTextNext}>Next</Text>
                     <Icon name="chevron-right" size={24} color="#FFFFFF" />
                   </TouchableOpacity>
                 )}

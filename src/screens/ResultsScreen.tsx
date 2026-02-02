@@ -331,6 +331,7 @@ export default function ResultsScreen({ navigation, route }: Props) {
   const correctAnswers = calculateCorrectAnswers(results.detailed_answers);
   const wrongAnswers = calculateWrongAnswers(results.detailed_answers, results.total_questions, results.attempted_questions);
   const unattemptedQuestions = calculateUnattempted(results.total_questions, results.attempted_questions);
+  console.log("Results Data:", results.attempted_questions);
 
   return (
     <SafeAreaView style={styles.container}>

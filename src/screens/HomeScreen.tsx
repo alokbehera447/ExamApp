@@ -1,4 +1,4 @@
-// HomeScreen.tsx - Fixed Version with Auto-Refresh
+// HomeScreen.tsx - Updated with requested changes
 import React, { useState, useEffect, useRef } from "react";
 import {
   View,
@@ -37,7 +37,7 @@ import LinearGradient from "react-native-linear-gradient";
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get("window");
 
 // Types for better organization
-type ExamCategory = 'available' | 'ongoing' | 'scheduled' | 'completed' | 'disqualified';
+type ExamCategory = 'available' | 'ongoing' | 'upcoming' | 'completed' | 'disqualified';
 
 interface ExamStatusInfo {
   status: ExamCategory;
@@ -64,7 +64,7 @@ export default function HomeScreen({ navigation }: any) {
     'all': false,
     'ongoing': false,
     'available': false,
-    'scheduled': false,
+    'upcoming': false,
     'completed': false,
     'disqualified': false
   });
@@ -90,7 +90,6 @@ export default function HomeScreen({ navigation }: any) {
   useEffect(() => {
     const unsubscribe = navigation.addListener('focus', () => {
       console.log('📱 Screen focused - refreshing dashboard...');
-      // Refresh data when user returns to this screen
       loadUserProfile();
       loadDashboard();
     });
@@ -159,6 +158,23 @@ export default function HomeScreen({ navigation }: any) {
     }
   };
 
+  // ✅ NEW: Format date and time together
+  const formatDateTime = (dateString: string) => {
+    try {
+      const date = new Date(dateString);
+      return date.toLocaleString('en-US', {
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: true
+      });
+    } catch {
+      return "Invalid date";
+    }
+  };
+
   const formatDuration = (minutes: number) => {
     const hours = Math.floor(minutes / 60);
     const mins = minutes % 60;
@@ -185,10 +201,16 @@ export default function HomeScreen({ navigation }: any) {
     }
   };
 
+  // ✅ UPDATED: Check if exam is scheduled for future
+  const isScheduledForFuture = (exam: DashboardExam): boolean => {
+    if (!exam.start_date) return false;
+    return new Date(exam.start_date) > new Date();
+  };
+
   const getExamStatusInfo = (exam: DashboardExam): ExamStatusInfo => {
     const status = exam.status.toLowerCase();
 
-    // Check for completed exams first (multiple possible statuses)
+    // Check for completed exams first
     if (status === 'submitted' || status === 'completed' || 
         status === 'auto_submitted' || exam.submitted_at) {
       return {
@@ -220,11 +242,11 @@ export default function HomeScreen({ navigation }: any) {
       };
     }
 
-    // Available/Scheduled exams
-    if (exam.start_date && new Date(exam.start_date) > new Date()) {
+    // ✅ UPDATED: Check if scheduled for future (changed from "scheduled" to "upcoming")
+    if (isScheduledForFuture(exam)) {
       return {
-        status: "scheduled",
-        text: "Scheduled",
+        status: "upcoming",
+        text: "Upcoming",
         color: "#8B5CF6",
         icon: "calendar-clock",
         gradient: ["#EDE9FE", "#DDD6FE"]
@@ -240,7 +262,7 @@ export default function HomeScreen({ navigation }: any) {
     };
   };
 
-  // Show exam details for scheduled exams
+  // Show exam details
   const showExamDetails = async (exam: DashboardExam) => {
     try {
       setLoadingDetails(true);
@@ -257,12 +279,17 @@ export default function HomeScreen({ navigation }: any) {
     }
   };
 
-  // Handle Start button click for available exams
+  // ✅ UPDATED: Handle Start button click - prevent for scheduled exams
   const handleStartButtonClick = async (exam: DashboardExam) => {
+    // ✅ Prevent starting scheduled exams
+    if (isScheduledForFuture(exam)) {
+      alert(`This exam is scheduled for ${formatDateTime(exam.start_date!)}. Please wait until the scheduled time.`);
+      return;
+    }
+
     setSelectedExam(exam);
 
     try {
-      // Load exam details for confirmation modal
       const detailedExam = await getExamDetails(exam.id);
       setExamDetails(detailedExam);
       setModalVisible(true);
@@ -277,16 +304,23 @@ export default function HomeScreen({ navigation }: any) {
   const handleStartExam = async () => {
     if (!selectedExam || !examDetails) return;
 
+    // ✅ Double-check: Don't allow starting scheduled exams
+    if (isScheduledForFuture(selectedExam)) {
+      alert(`This exam is scheduled for ${formatDateTime(selectedExam.start_date!)}. Please wait until the scheduled time.`);
+      setModalVisible(false);
+      setSelectedExam(null);
+      setExamDetails(null);
+      return;
+    }
+
     setStartingExamId(selectedExam.id);
     try {
       const response = await startExam(selectedExam.id);
-      // Close modal and clear state
       setModalVisible(false);
       setSelectedExam(null);
       setExamDetails(null);
       setStartingExamId(null);
 
-      // Navigate to exam screen
       navigation.navigate("Exam", {
         attemptId: response.attempt.id,
         examId: selectedExam.id
@@ -334,7 +368,7 @@ export default function HomeScreen({ navigation }: any) {
       case 'ongoing':
         exams = ongoingExams;
         break;
-      case 'scheduled':
+      case 'upcoming':
         exams = scheduledExams;
         break;
       case 'completed':
@@ -353,8 +387,7 @@ export default function HomeScreen({ navigation }: any) {
         ];
         break;
     }
-    console.log("Exams in selected category:", exams);
-    // Return all or limited based on showAll state
+    
     return showAll ? exams : exams.slice(0, 5);
   };
 
@@ -371,7 +404,7 @@ export default function HomeScreen({ navigation }: any) {
     switch (category) {
       case 'available': return availableExams.length;
       case 'ongoing': return ongoingExams.length;
-      case 'scheduled': return scheduledExams.length;
+      case 'upcoming': return scheduledExams.length;
       case 'completed': return completedExams.length;
       case 'disqualified': return disqualifiedExams.length;
       case 'all':
@@ -381,11 +414,11 @@ export default function HomeScreen({ navigation }: any) {
     }
   };
 
-  // Exam Card Component
+  // ✅ UPDATED: Exam Card Component with new time display and Start button
   const ExamCard = ({ exam, index }: { exam: DashboardExam; index: number }) => {
     const statusInfo = getExamStatusInfo(exam);
     const isStarting = startingExamId === exam.id;
-    console.log("Rendering ExamCard for exam ID:", exam.id, "Status:", statusInfo.status);
+    const isScheduled = isScheduledForFuture(exam);
 
     return (
       <Animated.View
@@ -428,43 +461,49 @@ export default function HomeScreen({ navigation }: any) {
             </View>
           </View>
 
-          {/* Action Buttons */}
+          {/* ✅ UPDATED: Action Buttons */}
           <View style={styles.actionButtons}>
+            {/* Ongoing exams show RESUME button */}
             {statusInfo.status === 'ongoing' && exam.can_resume && !isStarting && (
               <TouchableOpacity
                 style={[styles.actionButton, styles.resumeButton]}
                 onPress={() => handleResumeExam(exam)}
               >
-                <Icon name="play" size={20} color="#FFFFFF" />
+                <Icon name="play" size={18} color="#FFFFFF" />
+                <Text style={styles.actionButtonText}>Resume</Text>
               </TouchableOpacity>
             )}
 
-            {/* Available exams show START button */}
+            {/* ✅ Available exams show START button with text */}
             {statusInfo.status === 'available' && !isStarting && (
               <TouchableOpacity
                 style={[styles.actionButton, styles.startButton]}
                 onPress={() => handleStartButtonClick(exam)}
               >
-                <Icon name="play" size={20} color="#FFFFFF" />
+                <Icon name="play" size={18} color="#FFFFFF" />
+                <Text style={styles.actionButtonText}>Start</Text>
               </TouchableOpacity>
             )}
 
-            {/* Scheduled exams show info button */}
-            {statusInfo.status === 'scheduled' && !isStarting && (
+            {/* ✅ Upcoming (Scheduled) exams show info button - DISABLED START */}
+            {statusInfo.status === 'upcoming' && !isStarting && (
               <TouchableOpacity
                 style={[styles.actionButton, styles.infoButton]}
                 onPress={() => showExamDetails(exam)}
               >
-                <Icon name="information" size={20} color="#3B82F6" />
+                <Icon name="information" size={18} color="#8B5CF6" />
+                <Text style={[styles.actionButtonText, { color: '#8B5CF6' }]}>Details</Text>
               </TouchableOpacity>
             )}
 
+            {/* Completed exams show VIEW button */}
             {statusInfo.status === 'completed' && !isStarting && (
               <TouchableOpacity
                 style={[styles.actionButton, styles.resultsButton]}
                 onPress={() => handleViewResults(exam)}
               >
-                <Icon name="chart-bar" size={20} color="#10B981" />
+                <Icon name="chart-bar" size={18} color="#10B981" />
+                <Text style={[styles.actionButtonText, { color: '#10B981' }]}>View</Text>
               </TouchableOpacity>
             )}
           </View>
@@ -474,6 +513,31 @@ export default function HomeScreen({ navigation }: any) {
         {!isStarting && (
           <>
             <View style={styles.cardBody}>
+              {/* ✅ NEW: Show time info based on status */}
+              {statusInfo.status === 'upcoming' && exam.start_date && (
+                <View style={styles.timeInfoContainer}>
+                  <Icon name="calendar-clock" size={14} color="#8B5CF6" />
+                  <Text style={styles.timeInfoLabel}>Starts at: </Text>
+                  <Text style={styles.timeInfoValue}>{formatDateTime(exam.start_date)}</Text>
+                </View>
+              )}
+
+              {statusInfo.status === 'available' && exam.start_date && (
+                <View style={styles.timeInfoContainer}>
+                  <Icon name="clock-check-outline" size={14} color="#3B82F6" />
+                  <Text style={styles.timeInfoLabel}>Started at: </Text>
+                  <Text style={styles.timeInfoValue}>{formatDateTime(exam.start_date)}</Text>
+                </View>
+              )}
+
+              {statusInfo.status === 'ongoing' && exam.started_at && (
+                <View style={styles.timeInfoContainer}>
+                  <Icon name="clock-start" size={14} color="#F59E0B" />
+                  <Text style={styles.timeInfoLabel}>Started at: </Text>
+                  <Text style={styles.timeInfoValue}>{formatDateTime(exam.started_at)}</Text>
+                </View>
+              )}
+
               {statusInfo.status === 'ongoing' && exam.time_remaining && (
                 <View style={styles.timeRemaining}>
                   <Icon name="timer-sand" size={14} color="#F59E0B" />
@@ -522,15 +586,7 @@ export default function HomeScreen({ navigation }: any) {
                 <View style={styles.submittedInfo}>
                   <Icon name="check-circle" size={12} color="#94A3B8" />
                   <Text style={styles.submittedText}>
-                    Submitted on {formatDate(exam.submitted_at)}
-                  </Text>
-                </View>
-              )}
-              {exam.started_at && !exam.submitted_at && (
-                <View style={styles.submittedInfo}>
-                  <Icon name="clock-start" size={12} color="#94A3B8" />
-                  <Text style={styles.submittedText}>
-                    Started on {formatDate(exam.started_at)}
+                    Submitted on {formatDateTime(exam.submitted_at)}
                   </Text>
                 </View>
               )}
@@ -585,7 +641,6 @@ export default function HomeScreen({ navigation }: any) {
     );
   }
 
-  // Calculate if we need show more button
   const totalExamsInCategory = getCategoryStats(activeCategory);
   const showingExamsCount = getFilteredExams().length;
   const needsShowMore = totalExamsInCategory > 5;
@@ -737,7 +792,7 @@ export default function HomeScreen({ navigation }: any) {
           </View>
         )}
 
-        {/* Category Tabs */}
+        {/* Category Tabs - UPDATED "Scheduled" to "Upcoming" */}
         <ScrollView
           horizontal
           showsHorizontalScrollIndicator={false}
@@ -747,7 +802,7 @@ export default function HomeScreen({ navigation }: any) {
           <CategoryTab category="all" label="All Exams" />
           <CategoryTab category="ongoing" label="Ongoing" />
           <CategoryTab category="available" label="Available" />
-          <CategoryTab category="scheduled" label="Scheduled" />
+          <CategoryTab category="upcoming" label="Upcoming" />
           <CategoryTab category="completed" label="Completed" />
           <CategoryTab category="disqualified" label="Disqualified" />
         </ScrollView>
@@ -760,7 +815,7 @@ export default function HomeScreen({ navigation }: any) {
                 activeCategory === 'completed' ? 'Completed Exams' :
                   activeCategory === 'ongoing' ? 'Ongoing Exams' :
                     activeCategory === 'available' ? 'Available Exams' :
-                      activeCategory === 'scheduled' ? 'Scheduled Exams' : 'Disqualified Exams'}
+                      activeCategory === 'upcoming' ? 'Upcoming Exams' : 'Disqualified Exams'}
             </Text>
             <View style={styles.sectionRightHeader}>
               <Text style={styles.sectionCount}>
@@ -779,7 +834,6 @@ export default function HomeScreen({ navigation }: any) {
           {getFilteredExams().length > 0 ? (
             <>
               {getFilteredExams().map((exam, index) => (
-                console.log("Displaying exam:", exam),
                 <ExamCard
                   key={`${exam.id}-${exam.attempt_id || index}-${activeCategory}`}
                   exam={exam}
@@ -787,7 +841,6 @@ export default function HomeScreen({ navigation }: any) {
                 />
               ))}
 
-              {/* Show More/Less Button */}
               {needsShowMore && (
                 <TouchableOpacity
                   style={styles.showMoreButton}
@@ -814,14 +867,14 @@ export default function HomeScreen({ navigation }: any) {
                   activeCategory === 'completed' ? 'No Completed Exams' :
                     activeCategory === 'ongoing' ? 'No Ongoing Exams' :
                       activeCategory === 'available' ? 'No Available Exams' :
-                        activeCategory === 'scheduled' ? 'No Scheduled Exams' : 'No Disqualified Exams'}
+                        activeCategory === 'upcoming' ? 'No Upcoming Exams' : 'No Disqualified Exams'}
               </Text>
               <Text style={styles.emptyText}>
                 {activeCategory === 'all' ? 'Check back later for new exams' :
                   activeCategory === 'completed' ? 'Complete some exams to see them here' :
                     activeCategory === 'ongoing' ? 'Start an exam to see it here' :
                       activeCategory === 'available' ? 'All exams have been attempted' :
-                        activeCategory === 'scheduled' ? 'No exams are scheduled yet' : 'No disqualifications'}
+                        activeCategory === 'upcoming' ? 'No exams are scheduled yet' : 'No disqualifications'}
               </Text>
               <TouchableOpacity
                 style={styles.refreshButton}
@@ -837,8 +890,7 @@ export default function HomeScreen({ navigation }: any) {
         <View style={styles.footerSpacer} />
       </Animated.ScrollView>
 
-      {/* Rest of modals remain the same... */}
-      {/* EXAM CONFIRMATION MODAL */}
+      {/* EXAM CONFIRMATION MODAL - UPDATED with scheduled check */}
       <Modal
         animationType="slide"
         transparent={true}
@@ -916,12 +968,31 @@ export default function HomeScreen({ navigation }: any) {
                     </View>
                   </View>
 
+                  {/* ✅ UPDATED: Disable button for scheduled exams */}
+                  {selectedExam && isScheduledForFuture(selectedExam) && (
+                    <View style={styles.scheduledWarning}>
+                      <Icon name="calendar-alert" size={20} color="#8B5CF6" />
+                      <Text style={styles.scheduledWarningText}>
+                        This exam is scheduled for {formatDateTime(selectedExam.start_date!)}.{'\n'}
+                        You cannot start it before the scheduled time.
+                      </Text>
+                    </View>
+                  )}
+
                   <TouchableOpacity
                     style={[
                       styles.primaryButton,
-                      (!examDetails.is_question_complete || startingExamId === examDetails.id) && styles.disabledButton
+                      (
+                        !examDetails.is_question_complete || 
+                        startingExamId === examDetails.id ||
+                        (selectedExam && isScheduledForFuture(selectedExam))
+                      ) && styles.disabledButton
                     ]}
-                    disabled={!examDetails.is_question_complete || startingExamId === examDetails.id}
+                    disabled={
+                      !examDetails.is_question_complete || 
+                      startingExamId === examDetails.id ||
+                      (selectedExam && isScheduledForFuture(selectedExam))
+                    }
                     onPress={handleStartExam}
                   >
                     {startingExamId === examDetails.id ? (
@@ -933,8 +1004,14 @@ export default function HomeScreen({ navigation }: any) {
                       </>
                     ) : (
                       <>
-                        <Text style={styles.primaryButtonText}>Start Examination</Text>
-                        <Icon name="arrow-right" size={20} color="#FFF" />
+                        <Text style={styles.primaryButtonText}>
+                          {selectedExam && isScheduledForFuture(selectedExam) 
+                            ? 'Exam Not Yet Available' 
+                            : 'Start Examination'}
+                        </Text>
+                        {!(selectedExam && isScheduledForFuture(selectedExam)) && (
+                          <Icon name="arrow-right" size={20} color="#FFF" />
+                        )}
                       </>
                     )}
                   </TouchableOpacity>
@@ -1011,10 +1088,6 @@ const RuleItem = ({ text, icon }: any) => (
     <Text style={styles.ruleText}>{text}</Text>
   </View>
 );
-
-// Styles remain exactly the same... 
-// (Copy all your existing styles here - they're unchanged)
-
 
 const styles = StyleSheet.create({
   container: {
@@ -1161,7 +1234,6 @@ const styles = StyleSheet.create({
   welcomeIcon: {
     opacity: 0.9,
   },
-  // Compact Performance Stats
   compactStatsContainer: {
     backgroundColor: '#FFFFFF',
     marginHorizontal: 20,
@@ -1367,17 +1439,24 @@ const styles = StyleSheet.create({
     color: '#64748B',
     fontWeight: '500',
   },
+  // ✅ UPDATED: Action buttons with text
   actionButtons: {
     flexDirection: 'row',
     marginLeft: 8,
   },
   actionButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    justifyContent: 'center',
+    flexDirection: 'row',
     alignItems: 'center',
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 12,
     marginLeft: 8,
+    gap: 6,
+  },
+  actionButtonText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#FFFFFF',
   },
   resumeButton: {
     backgroundColor: "#F59E0B",
@@ -1396,9 +1475,9 @@ const styles = StyleSheet.create({
     elevation: 4,
   },
   infoButton: {
-    backgroundColor: '#EFF6FF',
+    backgroundColor: '#EDE9FE',
     borderWidth: 1,
-    borderColor: '#DBEAFE',
+    borderColor: '#DDD6FE',
   },
   resultsButton: {
     backgroundColor: '#ECFDF5',
@@ -1407,6 +1486,28 @@ const styles = StyleSheet.create({
   },
   cardBody: {
     marginBottom: 12,
+  },
+  // ✅ NEW: Time info display
+  timeInfoContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F8FAFC',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 10,
+    marginBottom: 12,
+    flexWrap: 'wrap',
+  },
+  timeInfoLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#64748B',
+    marginLeft: 6,
+  },
+  timeInfoValue: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#1E293B',
   },
   timeRemaining: {
     flexDirection: 'row',
@@ -1552,16 +1653,13 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.5)',
   },
-  modalOverlayPressable: {
-    flex: 1,
-  },
   modalContainer: {
     flex: 1,
     justifyContent: 'flex-end',
     backgroundColor: 'transparent',
   },
   modalBackdrop: {
-    position: 'absolute', // ADD THIS
+    position: 'absolute',
     top: 0,
     left: 0,
     right: 0,
@@ -1573,13 +1671,13 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
     maxHeight: SCREEN_HEIGHT * 0.85,
-    minHeight: SCREEN_HEIGHT * 0.8, // ADD THIS to ensure minimum height
+    minHeight: SCREEN_HEIGHT * 0.8,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: -4 },
     shadowOpacity: 0.1,
     shadowRadius: 12,
     elevation: 20,
-    paddingBottom: 0, // ADD THIS
+    paddingBottom: 0,
   },
   modalHeader: {
     flexDirection: 'row',
@@ -1610,35 +1708,13 @@ const styles = StyleSheet.create({
     color: '#64748B',
     marginTop: 12,
   },
-  modalError: {
-    alignItems: 'center',
-    padding: 40,
-  },
-  modalErrorText: {
-    fontSize: 16,
-    color: '#EF4444',
-    marginTop: 16,
-    marginBottom: 20,
-    textAlign: 'center',
-  },
-  retryButton: {
-    backgroundColor: '#3B82F6',
-    paddingHorizontal: 20,
-    paddingVertical: 12,
-    borderRadius: 8,
-  },
-  retryButtonText: {
-    color: '#FFFFFF',
-    fontSize: 14,
-    fontWeight: '600',
-  },
   modalScrollView: {
     flex: 1,
   },
   modalScrollContent: {
     padding: 24,
     paddingTop: 0,
-    paddingBottom: Platform.OS === 'ios' ? 40 : 20, // ADD THIS for safe area
+    paddingBottom: Platform.OS === 'ios' ? 40 : 20,
   },
   modalTitle: {
     fontSize: 20,
@@ -1652,7 +1728,6 @@ const styles = StyleSheet.create({
     color: '#64748B',
     lineHeight: 20,
     marginBottom: 24,
-    paddingHorizontal: 24,
   },
   gridContainer: {
     flexDirection: 'row',
@@ -1709,22 +1784,24 @@ const styles = StyleSheet.create({
     flex: 1,
     fontWeight: '500',
   },
-  warningBox: {
-    backgroundColor: '#FFFBEB',
+  // ✅ NEW: Scheduled exam warning
+  scheduledWarning: {
+    backgroundColor: '#EDE9FE',
     padding: 16,
     borderRadius: 12,
     flexDirection: 'row',
     alignItems: 'center',
     marginTop: 20,
     borderWidth: 1,
-    borderColor: '#FEF3C7'
+    borderColor: '#DDD6FE',
   },
-  warningText: {
+  scheduledWarningText: {
     flex: 1,
     fontSize: 13,
-    color: '#92400E',
+    color: '#6B21A8',
     marginLeft: 12,
     lineHeight: 18,
+    fontWeight: '500',
   },
   primaryButton: {
     backgroundColor: '#3B82F6',

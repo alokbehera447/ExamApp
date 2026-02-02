@@ -174,11 +174,11 @@ export const useProctoring = (attemptId: number, isProctoringEnabled: boolean) =
           title: 'Unusual Head Position',
           message: 'Your head position seems unusual.\n\n📌 Action Required:\n• Face the screen directly\n• Sit upright\n• Maintain proper posture',
         };
-      default:
-        return {
-          title: 'Proctoring Warning',
-          message: 'A potential violation has been detected.\n\n📌 Action Required:\n• Maintain proper exam conduct\n• Follow exam guidelines',
-        };
+      // default:
+      //   return {
+      //     title: 'Proctoring Warning',
+      //     message: 'A potential violation has been detected.\n\n📌 Action Required:\n• Maintain proper exam conduct\n• Follow exam guidelines',
+      //   };
     }
   };
 
