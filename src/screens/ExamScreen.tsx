@@ -32,9 +32,31 @@ import {
   SubmitExamPayload,
   AnswerWithTime,
 } from "../api/examApi";
-import Icon from "react-native-vector-icons/MaterialCommunityIcons";
+import {
+  Clock,
+  Flag,
+  CheckCircle,
+  AlertTriangle,
+  Save,
+  Send,
+  Eye,
+  EyeOff,
+  ChevronLeft,
+  ChevronRight,
+  User,
+  ShieldCheck,
+  Pause,
+  Layout,
+  Info as InfoIcon,
+  CircleCheck,
+  CircleAlert,
+  Menu,
+} from 'lucide-react-native';
+import LaTeXRenderer from '../components/LaTeXRenderer';
+import LinearGradient from 'react-native-linear-gradient';
 
 const { width, height } = Dimensions.get('window');
+const isSmallDevice = width < 375;
 
 type ExamScreenRouteProp = RouteProp<{ Exam: { attemptId: number; examId: number } }, 'Exam'>;
 
@@ -50,7 +72,7 @@ export default function ExamScreen() {
   const route = useRoute<ExamScreenRouteProp>();
   const navigation = useNavigation();
   const { attemptId, examId } = route.params;
-  
+
   const [attempt, setAttempt] = useState<ExamAttempt | null>(null);
   const [questions, setQuestions] = useState<Question[]>([]);
   const [loading, setLoading] = useState(true);
@@ -63,8 +85,16 @@ export default function ExamScreen() {
   const [lastSaved, setLastSaved] = useState<string | null>(null);
   const [questionStartTime, setQuestionStartTime] = useState<number>(Date.now());
 
+  // Section/Subject states
+  const [subjects, setSubjects] = useState<string[]>([]);
+  const [selectedSubject, setSelectedSubject] = useState<string | null>(null);
+  const [sections, setSections] = useState<any[]>([]);
+  const [selectedSectionId, setSelectedSectionId] = useState<number | null>(null);
+  const [questionsBySubject, setQuestionsBySubject] = useState<Record<string, Question[]>>({});
+
   const scrollViewRef = useRef<ScrollView>(null);
-  const autoSaveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const timerRef = useRef<any>(null);
+  const autoSaveTimeoutRef = useRef<any>(null);
   const cameraRef = useRef<Camera>(null);
 
   // Get front camera device
@@ -170,11 +200,54 @@ export default function ExamScreen() {
       const attemptData = await getExamAttempt(attemptId);
       setAttempt(attemptData);
 
-      const questionsData = await getExamQuestions(examId);
-      const sortedQuestions = questionsData.results.sort((a, b) => a.question_number - b.question_number);
+      const questionsData = await getExamQuestions(attemptId, examId);
+
+      // Robust sorting: Subject -> Section -> Question Number
+      const sortedQuestions = questionsData.results.sort((a, b) => {
+        // 1. Sort by subject (normalized)
+        const subA = (a.subject || "General").toLowerCase();
+        const subB = (b.subject || "General").toLowerCase();
+        if (subA !== subB) return subA.localeCompare(subB);
+
+        // 2. Sort by section ID if available
+        if (a.pattern_section_id !== b.pattern_section_id) {
+          return (a.pattern_section_id || 0) - (b.pattern_section_id || 0);
+        }
+
+        // 3. Sort by question number within the exam or pattern
+        const numA = a.question_number || a.question_number_in_pattern || 0;
+        const numB = b.question_number || b.question_number_in_pattern || 0;
+        return numA - numB;
+      });
+
       setQuestions(sortedQuestions);
 
-      console.log(`Loaded ${sortedQuestions.length} questions for exam ${examId}`);
+      // Group questions by subject and extract unique subjects (normalized)
+      const grouped: Record<string, Question[]> = {};
+      const uniqueSubjects: string[] = [];
+      const examSections = attemptData.exam.pattern?.sections || [];
+      setSections(examSections);
+
+      sortedQuestions.forEach(q => {
+        // Normalize subject to Title Case for consistent display
+        const rawSubject = q.subject || "General";
+        const subject = rawSubject.charAt(0).toUpperCase() + rawSubject.slice(1).toLowerCase();
+
+        if (!grouped[subject]) {
+          grouped[subject] = [];
+          uniqueSubjects.push(subject);
+        }
+        grouped[subject].push(q);
+      });
+
+      setQuestionsBySubject(grouped);
+      setSubjects(uniqueSubjects);
+
+      if (uniqueSubjects.length > 0) {
+        setSelectedSubject(uniqueSubjects[0]);
+      }
+
+      console.log(`Loaded ${sortedQuestions.length} questions across ${uniqueSubjects.length} subjects for exam ${examId}`);
 
     } catch (error: any) {
       console.error("Error loading exam data:", error);
@@ -206,14 +279,9 @@ export default function ExamScreen() {
   };
 
   const formatTime = (seconds: number) => {
-    const hours = Math.floor(seconds / 3600);
-    const minutes = Math.floor((seconds % 3600) / 60);
+    const mins = Math.floor(seconds / 60);
     const secs = seconds % 60;
-
-    if (hours > 0) {
-      return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-    }
-    return `${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   };
 
   const autoSaveAnswer = async (questionId: number, answer: string, isFlagged: boolean = false) => {
@@ -273,7 +341,7 @@ export default function ExamScreen() {
       }
 
       const answersForSubmit: Record<string, AnswerWithTime> = {};
-      
+
       Object.values(userAnswers).forEach((userAnswer) => {
         answersForSubmit[userAnswer.questionId.toString()] = {
           question_id: userAnswer.questionId,
@@ -291,7 +359,7 @@ export default function ExamScreen() {
       console.log('Submitting exam with payload:', payload);
 
       const response = await submitExamApi(payload);
-      
+
       console.log('Exam submitted successfully:', response);
 
       Alert.alert(
@@ -313,6 +381,11 @@ export default function ExamScreen() {
     if (currentQuestion) {
       const timeSpent = Math.floor((Date.now() - questionStartTime) / 1000);
       updateQuestionTime(currentQuestion.id, timeSpent);
+    }
+
+    const targetQuestion = questions[index];
+    if (targetQuestion && targetQuestion.subject !== selectedSubject) {
+      setSelectedSubject(targetQuestion.subject);
     }
 
     setCurrentQuestionIndex(index);
@@ -339,11 +412,11 @@ export default function ExamScreen() {
 
   const getQuestionTypeIcon = (type: string) => {
     switch (type) {
-      case "single_mcq": return "radiobox-marked";
-      case "multiple_mcq": return "checkbox-multiple-marked";
-      case "numerical": return "numeric";
-      case "subjective": return "text-box";
-      default: return "help-circle";
+      case "single_mcq": return <CircleCheck size={14} color="#2563EB" />;
+      case "multiple_mcq": return <Layout size={14} color="#2563EB" />;
+      case "numerical": return <InfoIcon size={14} color="#2563EB" />;
+      case "subjective": return <Layout size={14} color="#2563EB" />;
+      default: return <InfoIcon size={14} color="#2563EB" />;
     }
   };
 
@@ -352,204 +425,168 @@ export default function ExamScreen() {
     const isFlagged = userAnswers[question.id]?.isFlagged || false;
 
     return (
-      <KeyboardAvoidingView
-        behavior={Platform.OS === "ios" ? "padding" : "height"}
-        style={{ flex: 1 }}
-        keyboardVerticalOffset={100}
-      >
+      <View style={styles.questionMainWrapper}>
         <ScrollView
           ref={scrollViewRef}
-          style={styles.questionScrollView}
+          style={styles.flex1}
+          contentContainerStyle={{ padding: 16 }}
           showsVerticalScrollIndicator={false}
         >
-          <View style={styles.questionContainer}>
+          {/* Question Board */}
+          <View style={styles.questionBoard}>
             {/* Question Header */}
             <View style={styles.questionHeader}>
-              <View style={styles.questionNumberContainer}>
-                <Text style={styles.questionNumberText}>
-                  Question {index + 1}
-                </Text>
-                <View style={styles.questionMetaContainer}>
-                  <View style={styles.questionTypeBadge}>
-                    <Icon
-                      name={getQuestionTypeIcon(question.question_type)}
-                      size={16}
-                      color="#3B82F6"
-                    />
-                    <Text style={styles.questionTypeText}>
-                      {question.question_type.replace('_', ' ').toUpperCase()}
-                    </Text>
+              <View style={styles.questionHeaderTop}>
+                <View style={styles.questionLabelWrapper}>
+                  <View style={styles.questionIndexBadge}>
+                    <Text style={styles.questionIndexText}>Q{index + 1}</Text>
                   </View>
-                  <View style={styles.marksBadge}>
-                    <Text style={styles.marksText}>{question.marks} marks</Text>
-                  </View>
+                  <Text style={styles.questionHeaderText}>Question {index + 1}</Text>
                 </View>
+                <TouchableOpacity
+                  onPress={() => autoSaveAnswer(question.id, currentAnswer, !isFlagged)}
+                  style={[styles.flagBtn, isFlagged ? styles.flagBtnActive : styles.flagBtnInactive]}
+                >
+                  <Flag size={14} color={isFlagged ? "#D97706" : "#64748B"} fill={isFlagged ? "#D97706" : "none"} />
+                  <Text style={[styles.flagBtnText, isFlagged ? styles.flagBtnTextActive : styles.flagBtnTextInactive]}>
+                    {isFlagged ? 'Flagged' : 'Review'}
+                  </Text>
+                </TouchableOpacity>
               </View>
-            </View>
 
-            {/* Question Text */}
-            <View style={styles.questionTextContainer}>
-              <Text style={styles.questionText}>
-                {question.question_text}
-              </Text>
-            </View>
-
-            {/* Options for MCQ */}
-            {['single_mcq', 'multiple_mcq'].includes(question.question_type) && (
-              <View style={styles.optionsContainer}>
-                {question.options.map((option, optionIndex) => {
-                  const isSelected = question.question_type === 'single_mcq'
-                    ? currentAnswer === option
-                    : currentAnswer.split('|').includes(option);
-
-                  return (
-                    <TouchableOpacity
-                      key={optionIndex}
-                      style={[
-                        styles.optionButton,
-                        isSelected && styles.optionSelected
-                      ]}
-                      onPress={() => {
-                        let newAnswer = "";
-                        if (question.question_type === 'single_mcq') {
-                          newAnswer = option;
-                        } else {
-                          const answers = currentAnswer ? currentAnswer.split('|') : [];
-                          if (answers.includes(option)) {
-                            newAnswer = answers.filter(a => a !== option).join('|');
-                          } else {
-                            newAnswer = [...answers, option].join('|');
-                          }
-                        }
-                        autoSaveAnswer(question.id, newAnswer, isFlagged);
-                      }}
-                    >
-                      <View style={styles.optionContent}>
-                        <View style={[
-                          styles.optionIndicator,
-                          isSelected && styles.optionIndicatorSelected
-                        ]}>
-                          {question.question_type === 'single_mcq' ? (
-                            isSelected && <View style={styles.optionIndicatorInner} />
-                          ) : (
-                            isSelected && <Icon name="check" size={16} color="#FFFFFF" />
-                          )}
-                        </View>
-                        <View style={styles.optionTextContainer}>
-                          <Text style={[
-                            styles.optionLabel,
-                            isSelected && styles.optionLabelSelected
-                          ]}>
-                            {String.fromCharCode(65 + optionIndex)}.
-                          </Text>
-                          <Text style={[
-                            styles.optionText,
-                            isSelected && styles.optionTextSelected
-                          ]}>
-                            {option}
-                          </Text>
-                        </View>
-                      </View>
-                    </TouchableOpacity>
-                  );
-                })}
-              </View>
-            )}
-
-            {/* Input for Numerical/Subjective */}
-            {['numerical', 'subjective'].includes(question.question_type) && (
-              <View style={styles.inputContainer}>
-                <Text style={styles.inputLabel}>
-                  Your Answer:
-                </Text>
-                <TextInput
-                  style={[
-                    styles.answerInput,
-                    question.question_type === 'subjective' && styles.answerInputSubjective
-                  ]}
-                  value={currentAnswer}
-                  onChangeText={(text) => autoSaveAnswer(question.id, text, isFlagged)}
-                  placeholder={`Type your ${question.question_type === 'numerical' ? 'numerical answer' : 'detailed answer'} here...`}
-                  placeholderTextColor="#94A3B8"
-                  multiline={question.question_type === 'subjective'}
-                  numberOfLines={question.question_type === 'subjective' ? 8 : 1}
-                  keyboardType={question.question_type === 'numerical' ? 'numeric' : 'default'}
-                  textAlignVertical="top"
-                />
-                {question.question_type === 'numerical' && (
-                  <Text style={styles.inputHint}>
-                    Enter only numbers
+              <View style={styles.questionSubHeader}>
+                <View style={styles.subjectBadge}>
+                  <Text style={styles.subjectBadgeText}>{question.subject}</Text>
+                </View>
+                {question.pattern_section_name && (
+                  <Text style={styles.sectionInfoText}>
+                    • {question.pattern_section_name}
                   </Text>
                 )}
-              </View>
-            )}
-
-            {/* Action Buttons */}
-            <View style={styles.questionActions}>
-              <TouchableOpacity
-                style={[styles.flagButton, isFlagged && styles.flagButtonActive]}
-                onPress={() => autoSaveAnswer(question.id, currentAnswer, !isFlagged)}
-              >
-                <Icon
-                  name={isFlagged ? "flag" : "flag-outline"}
-                  size={20}
-                  color={isFlagged ? "#EF4444" : "#64748B"}
-                />
-                <Text style={[styles.flagButtonText, isFlagged && styles.flagButtonTextActive]}>
-                  {isFlagged ? "Flagged" : "Review"}
-                </Text>
-              </TouchableOpacity>
-
-              <View style={styles.navigationButtons}>
-                {index > 0 && (
-                  <TouchableOpacity
-                    style={styles.navButton}
-                    onPress={() => navigateToQuestion(index - 1)}
-                  >
-                    <Icon name="chevron-left" size={24} color="#3B82F6" />
-                    <Text style={styles.navButtonText}>Previous</Text>
-                  </TouchableOpacity>
-                )}
-
-                {index < questions.length - 1 && (
-                  <TouchableOpacity
-                    style={[styles.navButton, styles.navButtonNext]}
-                    onPress={() => navigateToQuestion(index + 1)}
-                  >
-                    <Text style={styles.navButtonTextNext}>Next</Text>
-                    <Icon name="chevron-right" size={24} color="#FFFFFF" />
-                  </TouchableOpacity>
-                )}
+                <View style={styles.flex1} />
+                <View style={styles.marksLabelBadge}>
+                  <Text style={styles.marksLabelText}>+{question.marks} Marks</Text>
+                </View>
               </View>
             </View>
 
-            {/* Auto-save status */}
-            <View style={styles.saveStatusContainer}>
-              {autoSaving ? (
-                <View style={styles.savingIndicator}>
-                  <ActivityIndicator size="small" color="#3B82F6" />
-                  <Text style={styles.savingText}>Saving...</Text>
+            {/* Question Content */}
+            <View style={styles.questionContentBody}>
+              <View style={styles.questionTextContainer}>
+                <LaTeXRenderer content={question.question_text} />
+              </View>
+
+              {/* Nested Structure (Parts/Choices) */}
+              {question.structure?.is_nested && (
+                <View style={styles.nestedStructureContainer}>
+                  {question.structure.parts?.map((part: any, pIdx: number) => (
+                    <View key={pIdx} style={styles.nestedPart}>
+                      <View style={styles.nestedPartHeader}>
+                        <Text style={styles.nestedPartTitle}>Part {part.label || String.fromCharCode(65 + pIdx)}</Text>
+                        {part.marks && <Text style={styles.nestedPartMarks}>+{part.marks} Marks</Text>}
+                      </View>
+                      <LaTeXRenderer content={part.question_text} />
+                    </View>
+                  ))}
                 </View>
-              ) : lastSaved && (
-                <View style={styles.savedIndicator}>
-                  <Icon name="check-circle" size={16} color="#10B981" />
-                  <Text style={styles.savedText}>Saved at {lastSaved}</Text>
+              )}
+
+              {/* Options for MCQ */}
+              {['single_mcq', 'multiple_mcq'].includes(question.question_type) && (
+                <View style={styles.optionsList}>
+                  {question.options.map((option, optionIndex) => {
+                    const isSelected = question.question_type === 'single_mcq'
+                      ? currentAnswer === option
+                      : currentAnswer.split('|').includes(option);
+
+                    return (
+                      <TouchableOpacity
+                        key={optionIndex}
+                        onPress={() => {
+                          let newAnswer = "";
+                          if (question.question_type === 'single_mcq') {
+                            newAnswer = option;
+                          } else {
+                            const answers = currentAnswer ? currentAnswer.split('|') : [];
+                            if (answers.includes(option)) {
+                              newAnswer = answers.filter(a => a !== option).join('|');
+                            } else {
+                              newAnswer = [...answers, option].join('|');
+                            }
+                          }
+                          autoSaveAnswer(question.id, newAnswer, isFlagged);
+                        }}
+                        style={[styles.optionItem, isSelected ? styles.optionItemActive : styles.optionItemInactive]}
+                      >
+                        <View style={[styles.optionCircle, isSelected ? styles.optionCircleActive : styles.optionCircleInactive]}>
+                          <Text style={[styles.optionLabelText, isSelected && styles.whiteText]}>
+                            {String.fromCharCode(65 + optionIndex)}
+                          </Text>
+                        </View>
+                        <View style={styles.flex1}>
+                          <LaTeXRenderer content={option} />
+                        </View>
+                        {isSelected && <CircleCheck size={20} color="#2563EB" />}
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              )}
+
+              {/* Input for Numerical/Subjective */}
+              {['numerical', 'subjective'].includes(question.question_type) && (
+                <View style={styles.inputWrapper}>
+                  <Text style={styles.inputTitle}>Your Response</Text>
+                  <TextInput
+                    style={[
+                      styles.textInput,
+                      question.question_type === 'subjective' ? styles.textArea : null
+                    ]}
+                    value={currentAnswer}
+                    onChangeText={(text) => autoSaveAnswer(question.id, text, isFlagged)}
+                    placeholder={`Type your ${question.question_type === 'numerical' ? 'numerical' : 'detailed'} answer...`}
+                    placeholderTextColor="#94A3B8"
+                    multiline={question.question_type === 'subjective'}
+                    keyboardType={question.question_type === 'numerical' ? 'decimal-pad' : 'default'}
+                  />
+                  {question.question_type === 'numerical' && (
+                    <Text style={styles.inputNote}>Note: Only numerical values are allowed.</Text>
+                  )}
                 </View>
               )}
             </View>
           </View>
+
+          {/* Question Footer Info */}
+          <View style={styles.questionFooterInfo}>
+            <View style={styles.saveStatusRow}>
+              {autoSaving ? (
+                <View style={styles.saveStatusRow}>
+                  <ActivityIndicator size="small" color="#2563EB" />
+                  <Text style={styles.syncingText}>Syncing...</Text>
+                </View>
+              ) : lastSaved ? (
+                <View style={styles.saveStatusRow}>
+                  <Save size={14} color="#10B981" />
+                  <Text style={styles.savedTextDraft}>Draft Saved {lastSaved}</Text>
+                </View>
+              ) : null}
+            </View>
+          </View>
         </ScrollView>
-      </KeyboardAvoidingView>
+      </View>
     );
   };
 
   if (loading) {
     return (
-      <SafeAreaView style={styles.loadingContainer}>
-        <View style={styles.loadingContent}>
-          <ActivityIndicator size="large" color="#3B82F6" />
-          <Text style={styles.loadingText}>Loading Exam...</Text>
-          <Text style={styles.loadingSubtext}>Please wait while we prepare your questions</Text>
+      <SafeAreaView style={styles.loadingWrapper}>
+        <View style={styles.loadingInner}>
+          <ActivityIndicator size="large" color="#2563EB" />
+          <Text style={styles.loadingTitle}>PREPARING EXAM</Text>
+          <Text style={styles.loadingSubtext}>
+            Securing your connection and syncing assessment data...
+          </Text>
         </View>
       </SafeAreaView>
     );
@@ -557,24 +594,21 @@ export default function ExamScreen() {
 
   if (questions.length === 0) {
     return (
-      <SafeAreaView style={styles.errorContainer}>
-        <View style={styles.errorContent}>
-          <Icon name="alert-circle-outline" size={64} color="#EF4444" />
-          <Text style={styles.errorTitle}>Exam Not Found</Text>
-          <Text style={styles.errorText}>
-            Unable to load exam questions. This might be due to:
-            {"\n"}- Network issues
-            {"\n"}- Exam has been removed
-            {"\n"}- Invalid exam access
-          </Text>
-          <TouchableOpacity
-            style={styles.backButton}
-            onPress={() => navigation.goBack()}
-          >
-            <Icon name="arrow-left" size={20} color="#FFFFFF" />
-            <Text style={styles.backButtonText}>Return to Dashboard</Text>
-          </TouchableOpacity>
+      <SafeAreaView style={styles.errorFullWrapper}>
+        <View style={styles.errorIconBox}>
+          <CircleAlert size={40} color="#EF4444" />
         </View>
+        <Text style={styles.errorFullTitle}>ACCESS RESTRICTED</Text>
+        <Text style={styles.errorFullText}>
+          Questions could not be loaded. Please ensure you have an active connection and proper authorization.
+        </Text>
+        <TouchableOpacity
+          onPress={() => navigation.goBack()}
+          style={styles.errorBackBtn}
+        >
+          <ChevronLeft size={20} color="white" />
+          <Text style={styles.errorBackBtnText}>Back to Portal</Text>
+        </TouchableOpacity>
       </SafeAreaView>
     );
   }
@@ -586,47 +620,234 @@ export default function ExamScreen() {
     userAnswers[parseInt(id)]?.isFlagged
   ).length;
 
-  const renderProctoringStatus = () => {
-    if (!attempt?.proctoring_enabled) return null;
-    
-    return (
-      <View style={styles.proctoringStatusContainer}>
-        <View style={styles.proctoringStatus}>
-          <Icon 
-            name={isTakingSnapshot ? "camera" : "camera-outline"} 
-            size={16} 
-            color={isTakingSnapshot ? "#3B82F6" : hasPermission ? "#10B981" : "#EF4444"} 
-          />
-          <Text style={[
-            styles.proctoringStatusText,
-            isTakingSnapshot && styles.proctoringStatusTextActive
-          ]}>
-            {isTakingSnapshot ? 'Taking Snapshot...' : hasPermission ? 'Proctoring Active' : 'Camera Permission Denied'}
-          </Text>
-          {lastSnapshotTime && (
-            <Text style={styles.proctoringTime}>
-              Last: {lastSnapshotTime}
-            </Text>
-          )}
-          <Text style={styles.proctoringCount}>
-            #{snapshotCount}
-          </Text>
-          {violationCount > 0 && (
-            <View style={styles.violationBadge}>
-              <Text style={styles.violationText}>{violationCount}</Text>
-            </View>
-          )}
-        </View>
-      </View>
-    );
-  };
-
   return (
     <SafeAreaView style={styles.container}>
-      <StatusBar barStyle="dark-content" backgroundColor="#FFFFFF" />
+      <StatusBar barStyle="light-content" backgroundColor="#1e293b" />
 
-      {/* Hidden Camera View for Proctoring */}
-      {attempt?.proctoring_enabled && hasPermission && device && (
+      {/* Premium Header */}
+      <LinearGradient
+        colors={['#1e293b', '#0f172a']}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 0 }}
+        style={styles.premiumHeader}
+      >
+        <View style={styles.headerTitleContainer}>
+          <View style={styles.headerIconWrapper}>
+            <ShieldCheck size={16} color="#38bdf8" />
+          </View>
+          <View>
+            <Text style={styles.headerTextMain}>SECURE ASSESSMENT</Text>
+            <View style={styles.headerStatusRow}>
+              <View style={styles.statusDot} />
+              <Text style={styles.statusText}>Live & Encrypted</Text>
+            </View>
+          </View>
+        </View>
+
+        <View style={styles.headerRightControls}>
+          <View style={[styles.timerBadge, timeRemaining < 300 && styles.timerBadgeLow]}>
+            <Clock size={14} color={timeRemaining < 300 ? "#ffffff" : "#38bdf8"} />
+            <Text style={[styles.timerValue, timeRemaining < 300 && styles.timerLow]}>
+              {formatTime(timeRemaining)}
+            </Text>
+          </View>
+          <TouchableOpacity
+            onPress={() => setShowSubmitModal(true)}
+            style={styles.submitButtonHeader}
+          >
+            <Send size={14} color="white" />
+            <Text style={styles.submitButtonText}>Finish</Text>
+          </TouchableOpacity>
+        </View>
+      </LinearGradient>
+
+      {/* Subject Tabs */}
+      <View style={styles.tabsContainer}>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.tabsScroll}>
+          {subjects.map((subject) => {
+            const isSelected = selectedSubject === subject;
+            const subjectQuestions = questionsBySubject[subject] || [];
+            const answeredInSubject = subjectQuestions.filter(q =>
+              userAnswers[q.id]?.answer?.trim() !== ""
+            ).length;
+
+            return (
+              <TouchableOpacity
+                key={subject}
+                onPress={() => setSelectedSubject(subject)}
+                style={[styles.tabButton, isSelected && styles.tabButtonActive]}
+              >
+                <Text style={[styles.tabButtonText, isSelected && styles.tabButtonTextActive]}>
+                  {subject}
+                </Text>
+                <View style={[styles.countBadge, isSelected ? styles.countBadgeActive : styles.countBadgeInactive]}>
+                  <Text style={[styles.countText, isSelected && styles.countTextActive]}>
+                    {answeredInSubject}/{subjectQuestions.length}
+                  </Text>
+                </View>
+              </TouchableOpacity>
+            );
+          })}
+        </ScrollView>
+      </View>
+
+      {/* Violation Status Bar (if proctoring enabled) */}
+      {attempt?.proctoring_enabled && (
+        <TouchableOpacity
+          onPress={violationModal.visible ? undefined : () => { }}
+          style={[styles.violationBar, violationCount > 3 ? styles.violationBarCritical : styles.violationBarSafe]}
+        >
+          <View style={styles.violationBarLeft}>
+            <AlertTriangle size={12} color={violationCount > 3 ? "#ef4444" : "#10b981"} />
+            <Text style={[styles.violationBarText, violationCount > 3 ? styles.violationBarTextCritical : styles.violationBarTextSafe]}>
+              SECURE MONITORING {violationCount > 3 ? '(CRITICAL)' : '(ACTIVE)'}
+            </Text>
+          </View>
+          <View style={styles.violationCounterBadge}>
+            <Text style={[styles.violationBarCount, violationCount > 3 ? styles.violationBarCountCritical : styles.violationBarCountSafe]}>
+              {violationCount} {violationCount === 1 ? 'Violation' : 'Violations'}
+            </Text>
+          </View>
+        </TouchableOpacity>
+      )}
+
+      {/* Question Palette / Horizontal Navigator */}
+      <View style={styles.paletteContainer}>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.paletteScroll}>
+          {(selectedSubject ? (questionsBySubject[selectedSubject] || []) : questions).map((q, idx) => {
+            const index = questions.indexOf(q);
+            const isCurrent = index === currentQuestionIndex;
+            const answer = userAnswers[q.id];
+            const isAnswered = answer?.answer?.trim() !== "";
+            const isFlagged = answer?.isFlagged;
+
+            return (
+              <TouchableOpacity
+                key={q.id}
+                onPress={() => navigateToQuestion(index)}
+                style={[
+                  styles.paletteItem,
+                  isCurrent ? styles.paletteItemCurrent :
+                    isAnswered ? styles.paletteItemAnswered :
+                      isFlagged ? styles.paletteItemFlagged :
+                        styles.paletteItemDefault
+                ]}
+              >
+                <Text style={[
+                  styles.paletteText,
+                  isCurrent ? styles.paletteTextCurrent :
+                    isAnswered ? styles.paletteTextAnswered :
+                      isFlagged ? styles.paletteTextFlagged :
+                        styles.paletteTextDefault
+                ]}>
+                  {index + 1}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </ScrollView>
+      </View>
+
+      {/* Main Content */}
+      <View style={styles.flex1}>
+        {questions[currentQuestionIndex] && renderQuestion(questions[currentQuestionIndex], currentQuestionIndex)}
+      </View>
+
+      {/* Persistent Footer Navigation */}
+      <View style={styles.footerNav}>
+        <TouchableOpacity
+          onPress={() => currentQuestionIndex > 0 && navigateToQuestion(currentQuestionIndex - 1)}
+          disabled={currentQuestionIndex === 0}
+          style={[styles.footerBtn, styles.footerBtnPrev, currentQuestionIndex === 0 && styles.disabledOpacity]}
+        >
+          <ChevronLeft size={16} color={currentQuestionIndex === 0 ? "#cbd5e1" : "#64748b"} />
+          <Text style={styles.footerBtnText}>Previous</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          onPress={() => { }} // Could open a question map/grid modal
+          style={styles.footerMenuBtn}
+        >
+          <Layout size={18} color="#94a3b8" />
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          onPress={() => currentQuestionIndex < questions.length - 1 && navigateToQuestion(currentQuestionIndex + 1)}
+          disabled={currentQuestionIndex === questions.length - 1}
+          style={[
+            styles.footerBtn,
+            styles.footerBtnNext,
+            currentQuestionIndex === questions.length - 1 && styles.disabledOpacity
+          ]}
+        >
+          <Text style={styles.footerBtnTextNext}>
+            {currentQuestionIndex === questions.length - 1 ? 'Complete' : 'Save & Next'}
+          </Text>
+          <ChevronRight size={16} color="white" />
+        </TouchableOpacity>
+      </View>
+
+      {/* Submit Modal */}
+      <Modal visible={showSubmitModal} transparent animationType="fade">
+        <View style={styles.modalOverlay}>
+          <View style={styles.submitModalContainer}>
+            <View style={styles.submitModalHeader}>
+              <View style={styles.submitModalIconWrapper}>
+                <Send size={32} color="#2563EB" />
+              </View>
+              <Text style={styles.submitModalTitle}>Finish Assessment?</Text>
+              <Text style={styles.submitModalSubtext}>
+                You are about to submit your exam. Please review your attempt summary below.
+              </Text>
+            </View>
+
+            <View style={styles.submitModalStats}>
+              {subjects.map(subj => {
+                const subjQuestions = questionsBySubject[subj] || [];
+                const answered = subjQuestions.filter(q => userAnswers[q.id]?.answer?.trim() !== "").length;
+                return (
+                  <View key={subj} style={styles.submitStatRow}>
+                    <Text style={styles.submitStatLabel}>{subj}</Text>
+                    <Text style={styles.submitStatValue}>{answered} / {subjQuestions.length}</Text>
+                  </View>
+                );
+              })}
+            </View>
+
+            <View style={styles.submitModalButtons}>
+              <TouchableOpacity
+                onPress={() => setShowSubmitModal(false)}
+                style={styles.submitCancelBtn}
+              >
+                <Text style={styles.submitCancelBtnText}>Review</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={submitExam}
+                style={styles.submitConfirmBtn}
+              >
+                {submitting ? (
+                  <ActivityIndicator color="white" />
+                ) : (
+                  <Text style={styles.submitConfirmBtnText}>Submit Exam</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+      {/* Violation Modal */}
+      <ViolationModal
+        visible={violationModal.visible}
+        onClose={closeViolationModal}
+        violationType={violationModal.violationType}
+        violationTitle={violationModal.violationTitle}
+        violationMessage={violationModal.violationMessage}
+        totalViolations={violationCount}
+        isDisqualified={violationModal.isDisqualified}
+      />
+
+      {/* Hidden Camera for Proctoring */}
+      {attempt?.proctoring_enabled && device && (
         <View style={styles.hiddenCameraContainer}>
           <Camera
             ref={cameraRef}
@@ -637,210 +858,727 @@ export default function ExamScreen() {
           />
         </View>
       )}
-
-      {/* ⭐ PROFESSIONAL VIOLATION MODAL - ADD THIS ⭐ */}
-      <ViolationModal
-        visible={violationModal.visible}
-        onClose={closeViolationModal}
-        violationType={violationModal.violationType}
-        violationTitle={violationModal.violationTitle}
-        violationMessage={violationModal.violationMessage}
-        totalViolations={violationModal.totalViolations}
-        isDisqualified={violationModal.isDisqualified}
-      />
-
-      {/* Header */}
-      <View style={styles.header}>
-        <View style={styles.headerLeft}>
-          <TouchableOpacity onPress={handleBackPress} style={styles.backButtonHeader}>
-            <Icon name="arrow-left" size={24} color="#1E293B" />
-          </TouchableOpacity>
-          <View style={styles.examInfo}>
-            <Text style={styles.examTitle} numberOfLines={1}>
-              {attempt.exam_title}
-            </Text>
-            <Text style={styles.examSubtitle}>
-              Attempt #{attempt.attempt_number}
-            </Text>
-          </View>
-        </View>
-
-        <View style={styles.headerRight}>
-          <View style={styles.timerContainer}>
-            <Icon name="timer-outline" size={20} color="#EF4444" />
-            <Text style={styles.timerText}>{formatTime(timeRemaining)}</Text>
-          </View>
-        </View>
-      </View>
-
-      {/* Proctoring Status */}
-      {renderProctoringStatus()}
-
-      {/* Questions Progress Bar */}
-      <View style={styles.progressBarContainer}>
-        <View style={styles.progressBar}>
-          <View
-            style={[
-              styles.progressFill,
-              { width: `${((currentQuestionIndex + 1) / questions.length) * 100}%` }
-            ]}
-          />
-        </View>
-        <Text style={styles.progressText}>
-          {currentQuestionIndex + 1} of {questions.length}
-        </Text>
-      </View>
-
-      {/* Questions Navigator */}
-      <View style={styles.questionsNavContainer}>
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={styles.questionsNavContent}
-        >
-          {questions.map((question, index) => {
-            const status = getQuestionStatus(question.id);
-            const isCurrent = currentQuestionIndex === index;
-
-            return (
-              <TouchableOpacity
-                key={question.id}
-                style={[
-                  styles.questionNavItem,
-                  isCurrent && styles.questionNavItemActive,
-                  status === "answered" && styles.questionNavItemAnswered,
-                  status === "flagged" && styles.questionNavItemFlagged,
-                ]}
-                onPress={() => navigateToQuestion(index)}
-              >
-                <Text style={[
-                  styles.questionNavNumber,
-                  isCurrent && styles.questionNavNumberActive,
-                  status === "answered" && styles.questionNavNumberAnswered,
-                  status === "flagged" && styles.questionNavNumberFlagged,
-                ]}>
-                  {index + 1}
-                </Text>
-                <View style={[
-                  styles.questionNavIndicator,
-                  { backgroundColor: getQuestionStatusColor(status) }
-                ]} />
-              </TouchableOpacity>
-            );
-          })}
-        </ScrollView>
-      </View>
-
-      {/* Main Content */}
-      {questions.length > 0 && renderQuestion(questions[currentQuestionIndex], currentQuestionIndex)}
-
-      {/* Quick Stats Footer */}
-      <View style={styles.footer}>
-        <View style={styles.footerStats}>
-          <View style={styles.footerStat}>
-            <Text style={styles.footerStatValue}>{answeredCount}</Text>
-            <Text style={styles.footerStatLabel}>Answered</Text>
-          </View>
-          <View style={styles.footerStat}>
-            <Text style={[styles.footerStatValue, { color: "#EF4444" }]}>{flaggedCount}</Text>
-            <Text style={styles.footerStatLabel}>Flagged</Text>
-          </View>
-          <View style={styles.footerStat}>
-            <Text style={[styles.footerStatValue, { color: "#64748B" }]}>{questions.length - answeredCount}</Text>
-            <Text style={styles.footerStatLabel}>Left</Text>
-          </View>
-        </View>
-        <TouchableOpacity
-          style={styles.quickSubmitButton}
-          onPress={() => setShowSubmitModal(true)}
-        >
-          <Icon name="send" size={20} color="#FFFFFF" />
-          <Text style={styles.quickSubmitText}>Submit</Text>
-        </TouchableOpacity>
-      </View>
-
-      {/* Submit Modal */}
-      <Modal
-        visible={showSubmitModal}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setShowSubmitModal(false)}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContainer}>
-            <View style={styles.modalIcon}>
-              <Icon name="send-check" size={48} color="#3B82F6" />
-            </View>
-            <Text style={styles.modalTitle}>Submit Exam?</Text>
-            <Text style={styles.modalText}>
-              Are you sure you want to submit your exam? Once submitted, you cannot make any changes.
-            </Text>
-
-            <View style={styles.modalStats}>
-              <View style={styles.modalStatItem}>
-                <Text style={styles.modalStatLabel}>Questions Answered</Text>
-                <Text style={[styles.modalStatValue, { color: "#10B981" }]}>
-                  {answeredCount}/{questions.length}
-                </Text>
-              </View>
-              <View style={styles.modalStatItem}>
-                <Text style={styles.modalStatLabel}>Questions Flagged</Text>
-                <Text style={[styles.modalStatValue, { color: "#EF4444" }]}>
-                  {flaggedCount}
-                </Text>
-              </View>
-              <View style={styles.modalStatItem}>
-                <Text style={styles.modalStatLabel}>Time Remaining</Text>
-                <Text style={styles.modalStatValue}>
-                  {formatTime(timeRemaining)}
-                </Text>
-              </View>
-              {attempt?.proctoring_enabled && (
-                <View style={styles.modalStatItem}>
-                  <Text style={styles.modalStatLabel}>Snapshots Taken</Text>
-                  <Text style={styles.modalStatValue}>
-                    {snapshotCount}
-                  </Text>
-                </View>
-              )}
-            </View>
-
-            <View style={styles.modalButtons}>
-              <TouchableOpacity
-                style={[styles.modalButton, styles.modalButtonCancel]}
-                onPress={() => setShowSubmitModal(false)}
-                disabled={submitting}
-              >
-                <Text style={styles.modalButtonCancelText}>Cancel</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={[styles.modalButton, styles.modalButtonSubmit]}
-                onPress={submitExam}
-                disabled={submitting}
-              >
-                {submitting ? (
-                  <ActivityIndicator color="#FFFFFF" size="small" />
-                ) : (
-                  <>
-                    <Icon name="check-circle" size={20} color="#FFFFFF" />
-                    <Text style={styles.modalButtonSubmitText}>Submit Now</Text>
-                  </>
-                )}
-              </TouchableOpacity>
-            </View>
-          </View>
-        </View>
-      </Modal>
     </SafeAreaView>
   );
 }
 
-// Styles (keep all your existing styles exactly the same)
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#F8FAFC',
+    backgroundColor: '#f8fafc',
+  },
+  flex1: {
+    flex: 1,
+  },
+  whiteText: {
+    color: '#FFFFFF',
+  },
+  disabledOpacity: {
+    opacity: 0.3,
+  },
+  // Header Styles
+  premiumHeader: {
+    paddingHorizontal: 20,
+    paddingTop: Platform.OS === 'android' ? 12 : 0,
+    paddingBottom: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    elevation: 4,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 4,
+  },
+  headerTitleContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  headerIconWrapper: {
+    width: 32,
+    height: 32,
+    borderRadius: 8,
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  headerTextMain: {
+    color: '#f8fafc',
+    fontWeight: '800',
+    fontSize: 11,
+    letterSpacing: 1,
+    marginBottom: 2,
+  },
+  headerStatusRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  statusDot: {
+    width: 5,
+    height: 5,
+    borderRadius: 2.5,
+    backgroundColor: '#10b981',
+    marginRight: 5,
+  },
+  statusText: {
+    color: '#94a3b8',
+    fontWeight: '600',
+    fontSize: 9,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  headerRightControls: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  timerBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 10,
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  timerBadgeLow: {
+    backgroundColor: '#ef4444',
+    borderColor: '#ef4444',
+  },
+  timerValue: {
+    marginLeft: 6,
+    fontSize: 16,
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+    fontWeight: '800',
+    color: '#f1f5f9',
+  },
+  timerLow: {
+    color: '#ffffff',
+  },
+  submitButtonHeader: {
+    backgroundColor: '#3b82f6',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  submitButtonText: {
+    color: '#FFFFFF',
+    fontWeight: '700',
+    fontSize: 12,
+  },
+  // Subject Tabs
+  tabsContainer: {
+    backgroundColor: '#ffffff',
+    borderBottomWidth: 1,
+    borderBottomColor: '#f1f5f9',
+  },
+  tabsScroll: {
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+  },
+  tabButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 12,
+    marginRight: 10,
+    backgroundColor: '#f1f5f9',
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+  },
+  tabButtonActive: {
+    backgroundColor: '#eff6ff',
+    borderColor: '#3b82f6',
+  },
+  tabButtonText: {
+    fontWeight: '700',
+    fontSize: 11,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    color: '#64748b',
+  },
+  tabButtonTextActive: {
+    color: '#1d4ed8',
+  },
+  countBadge: {
+    marginLeft: 8,
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+    borderRadius: 6,
+  },
+  countBadgeActive: {
+    backgroundColor: '#3b82f6',
+  },
+  countBadgeInactive: {
+    backgroundColor: '#e2e8f0',
+  },
+  countText: {
+    fontSize: 9,
+    fontWeight: '800',
+    color: '#475569',
+  },
+  countTextActive: {
+    color: '#ffffff',
+  },
+  // Violation Bar
+  violationBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 20,
+    paddingVertical: 6,
+    borderBottomWidth: 1,
+  },
+  violationBarSafe: {
+    backgroundColor: '#f0fdf4',
+    borderBottomColor: '#dcfce7',
+  },
+  violationBarCritical: {
+    backgroundColor: '#fef2f2',
+    borderBottomColor: '#fee2e2',
+  },
+  violationBarLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  violationBarText: {
+    marginLeft: 6,
+    fontSize: 9,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+  },
+  violationBarTextSafe: {
+    color: '#166534',
+  },
+  violationBarTextCritical: {
+    color: '#991b1b',
+  },
+  violationCounterBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 6,
+    backgroundColor: 'rgba(0,0,0,0.05)',
+  },
+  violationBarCount: {
+    fontSize: 9,
+    fontWeight: '800',
+  },
+  violationBarCountSafe: {
+    color: '#166534',
+  },
+  violationBarCountCritical: {
+    color: '#991b1b',
+  },
+  // Palette Styles
+  paletteContainer: {
+    backgroundColor: '#ffffff',
+    borderBottomWidth: 1,
+    borderBottomColor: '#f1f5f9',
+    paddingVertical: 10,
+  },
+  paletteScroll: {
+    paddingHorizontal: 16,
+  },
+  paletteItem: {
+    width: 38,
+    height: 38,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 8,
+    borderWidth: 1.5,
+  },
+  paletteItemDefault: {
+    backgroundColor: '#ffffff',
+    borderColor: '#e2e8f0',
+  },
+  paletteItemCurrent: {
+    backgroundColor: '#1e293b',
+    borderColor: '#1e293b',
+    transform: [{ scale: 1.05 }],
+    elevation: 4,
+  },
+  paletteItemAnswered: {
+    backgroundColor: '#dcfce7',
+    borderColor: '#22c55e',
+  },
+  paletteItemFlagged: {
+    backgroundColor: '#fef3c7',
+    borderColor: '#f59e0b',
+  },
+  paletteText: {
+    fontWeight: '800',
+    fontSize: 12,
+  },
+  paletteTextDefault: {
+    color: '#94a3b8',
+  },
+  paletteTextCurrent: {
+    color: '#ffffff',
+  },
+  paletteTextAnswered: {
+    color: '#166534',
+  },
+  paletteTextFlagged: {
+    color: '#92400e',
+  },
+  // Question Board
+  questionMainWrapper: {
+    flex: 1,
+    backgroundColor: '#f8fafc',
+  },
+  questionBoard: {
+    backgroundColor: '#ffffff',
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    overflow: 'hidden',
+    marginBottom: 20,
+    elevation: 2,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 10,
+  },
+  questionHeader: {
+    paddingHorizontal: 20,
+    paddingVertical: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f1f5f9',
+    backgroundColor: '#fafafa',
+  },
+  questionHeaderTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 10,
+  },
+  questionLabelWrapper: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  questionIndexBadge: {
+    backgroundColor: '#3b82f6',
+    paddingHorizontal: 10,
+    paddingVertical: 3,
+    borderRadius: 6,
+  },
+  questionIndexText: {
+    color: '#ffffff',
+    fontWeight: '800',
+    fontSize: 10,
+  },
+  questionHeaderText: {
+    color: '#1e293b',
+    fontWeight: '800',
+    fontSize: 13,
+  },
+  flagBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 5,
+    borderRadius: 10,
+    borderWidth: 1,
+    gap: 6,
+  },
+  flagBtnInactive: {
+    backgroundColor: '#ffffff',
+    borderColor: '#e2e8f0',
+  },
+  flagBtnActive: {
+    backgroundColor: '#fffbeb',
+    borderColor: '#fde68a',
+  },
+  flagBtnText: {
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  flagBtnTextInactive: {
+    color: '#64748b',
+  },
+  flagBtnTextActive: {
+    color: '#92400e',
+  },
+  questionSubHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  subjectBadge: {
+    backgroundColor: '#eff6ff',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 5,
+    marginRight: 10,
+  },
+  subjectBadgeText: {
+    color: '#1d4ed8',
+    fontSize: 9,
+    fontWeight: '800',
+    textTransform: 'uppercase',
+  },
+  sectionInfoText: {
+    color: '#94a3b8',
+    fontSize: 9,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+  },
+  marksLabelBadge: {
+    backgroundColor: '#f1f5f9',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 5,
+  },
+  marksLabelText: {
+    color: '#475569',
+    fontSize: 9,
+    fontWeight: '800',
+    textTransform: 'uppercase',
+  },
+  questionContentBody: {
+    padding: 20,
+  },
+  questionTextContainer: {
+    marginBottom: 24,
+  },
+  nestedStructureContainer: {
+    marginTop: 12,
+    paddingTop: 20,
+    borderTopWidth: 1,
+    borderTopColor: '#f1f5f9',
+  },
+  nestedPart: {
+    marginBottom: 20,
+    padding: 16,
+    backgroundColor: '#f8fafc',
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#f1f5f9',
+  },
+  nestedPartHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 10,
+  },
+  nestedPartTitle: {
+    fontWeight: '800',
+    color: '#334155',
+    fontSize: 12,
+  },
+  nestedPartMarks: {
+    fontSize: 9,
+    fontWeight: '800',
+    color: '#3b82f6',
+  },
+  optionsList: {
+    gap: 10,
+  },
+  optionItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 14,
+    borderRadius: 16,
+    borderWidth: 1.5,
+  },
+  optionItemInactive: {
+    borderColor: '#f1f5f9',
+    backgroundColor: '#ffffff',
+  },
+  optionItemActive: {
+    borderColor: '#3b82f6',
+    backgroundColor: '#eff6ff',
+  },
+  optionCircle: {
+    width: 28,
+    height: 28,
+    borderRadius: 8,
+    borderWidth: 1.5,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+  },
+  optionCircleInactive: {
+    borderColor: '#e2e8f0',
+  },
+  optionCircleActive: {
+    borderColor: '#3b82f6',
+    backgroundColor: '#3b82f6',
+  },
+  optionLabelText: {
+    fontWeight: '800',
+    fontSize: 11,
+    color: '#94a3b8',
+  },
+  inputWrapper: {
+    marginTop: 12,
+  },
+  inputTitle: {
+    color: '#64748b',
+    fontWeight: '800',
+    fontSize: 9,
+    textTransform: 'uppercase',
+    letterSpacing: 1,
+    marginBottom: 8,
+    marginLeft: 2,
+  },
+  textInput: {
+    backgroundColor: '#f8fafc',
+    borderWidth: 1.5,
+    borderColor: '#e2e8f0',
+    borderRadius: 16,
+    paddingHorizontal: 20,
+    paddingVertical: 14,
+    color: '#1e293b',
+    fontWeight: '700',
+    fontSize: 15,
+  },
+  textArea: {
+    height: 120,
+    textAlignVertical: 'top',
+  },
+  inputNote: {
+    color: '#94a3b8',
+    fontSize: 9,
+    marginTop: 6,
+    marginLeft: 2,
+    fontStyle: 'italic',
+  },
+  questionFooterInfo: {
+    paddingBottom: 40,
+  },
+  saveStatusRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  syncingText: {
+    color: '#3b82f6',
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  savedTextDraft: {
+    color: '#10b981',
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  // Footer Nav
+  footerNav: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    backgroundColor: '#ffffff',
+    borderTopWidth: 1,
+    borderTopColor: '#f1f5f9',
+    elevation: 10,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: -4 },
+    shadowOpacity: 0.05,
+    shadowRadius: 10,
+  },
+  footerBtn: {
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1,
+  },
+  footerBtnPrev: {
+    borderColor: '#e2e8f0',
+    backgroundColor: '#ffffff',
+  },
+  footerBtnNext: {
+    backgroundColor: '#1e293b',
+    borderColor: '#1e293b',
+    paddingHorizontal: 24,
+  },
+  footerBtnText: {
+    color: '#475569',
+    fontWeight: '700',
+    fontSize: 13,
+    marginLeft: 6,
+  },
+  footerBtnTextNext: {
+    color: '#ffffff',
+    fontWeight: '700',
+    fontSize: 13,
+    marginRight: 6,
+  },
+  footerMenuBtn: {
+    width: 40,
+    height: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 12,
+    backgroundColor: '#f1f5f9',
+  },
+  // Loading & Error States
+  loadingWrapper: {
+    flex: 1,
+    backgroundColor: '#ffffff',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  loadingInner: {
+    alignItems: 'center',
+  },
+  loadingTitle: {
+    color: '#1e293b',
+    fontWeight: '900',
+    fontSize: 18,
+    marginTop: 20,
+    letterSpacing: 2,
+  },
+  loadingSubtext: {
+    color: '#94a3b8',
+    fontSize: 13,
+    marginTop: 8,
+    textAlign: 'center',
+    paddingHorizontal: 40,
+  },
+  errorFullWrapper: {
+    flex: 1,
+    backgroundColor: '#ffffff',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 24,
+  },
+  errorIconBox: {
+    width: 70,
+    height: 70,
+    backgroundColor: '#fef2f2',
+    borderRadius: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 24,
+  },
+  errorFullTitle: {
+    color: '#b91c1c',
+    fontWeight: '900',
+    fontSize: 20,
+    textAlign: 'center',
+  },
+  errorFullText: {
+    color: '#64748b',
+    textAlign: 'center',
+    marginTop: 12,
+    lineHeight: 20,
+    fontSize: 14,
+  },
+  errorBackBtn: {
+    marginTop: 32,
+    backgroundColor: '#1e293b',
+    paddingHorizontal: 24,
+    paddingVertical: 14,
+    borderRadius: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  errorBackBtnText: {
+    color: '#ffffff',
+    fontWeight: '700',
+  },
+  // Submit Modal
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(15, 23, 42, 0.8)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 20,
+  },
+  submitModalContainer: {
+    backgroundColor: '#ffffff',
+    width: '100%',
+    borderRadius: 30,
+    padding: 24,
+  },
+  submitModalHeader: {
+    alignItems: 'center',
+    marginBottom: 20,
+  },
+  submitModalIconWrapper: {
+    width: 56,
+    height: 56,
+    backgroundColor: '#eff6ff',
+    borderRadius: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 12,
+  },
+  submitModalTitle: {
+    fontSize: 20,
+    fontWeight: '900',
+    color: '#1e293b',
+  },
+  submitModalSubtext: {
+    color: '#64748b',
+    textAlign: 'center',
+    marginTop: 6,
+    lineHeight: 18,
+    fontSize: 13,
+  },
+  submitModalStats: {
+    gap: 8,
+    marginBottom: 24,
+  },
+  submitStatRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: 12,
+    backgroundColor: '#f8fafc',
+    borderRadius: 12,
+  },
+  submitStatLabel: {
+    color: '#64748b',
+    fontWeight: '700',
+    fontSize: 9,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  submitStatValue: {
+    color: '#1e293b',
+    fontWeight: '900',
+    fontSize: 13,
+  },
+  submitModalButtons: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  submitCancelBtn: {
+    flex: 1,
+    paddingVertical: 14,
+    backgroundColor: '#f1f5f9',
+    borderRadius: 14,
+    alignItems: 'center',
+  },
+  submitCancelBtnText: {
+    color: '#64748b',
+    fontWeight: '700',
+  },
+  submitConfirmBtn: {
+    flex: 2,
+    paddingVertical: 14,
+    backgroundColor: '#3b82f6',
+    borderRadius: 14,
+    alignItems: 'center',
+  },
+  submitConfirmBtnText: {
+    color: '#ffffff',
+    fontWeight: '900',
   },
   hiddenCameraContainer: {
     position: 'absolute',
@@ -854,610 +1592,5 @@ const styles = StyleSheet.create({
   hiddenCamera: {
     width: 1,
     height: 1,
-  },
-  loadingContainer: {
-    flex: 1,
-    backgroundColor: '#FFFFFF',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  loadingContent: {
-    alignItems: 'center',
-    padding: 20,
-  },
-  loadingText: {
-    fontSize: 18,
-    fontWeight: '600',
-    color: '#1E293B',
-    marginTop: 16,
-    marginBottom: 8,
-  },
-  loadingSubtext: {
-    fontSize: 14,
-    color: '#64748B',
-    textAlign: 'center',
-    maxWidth: 300,
-  },
-  errorContainer: {
-    flex: 1,
-    backgroundColor: '#FFFFFF',
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 20,
-  },
-  errorContent: {
-    alignItems: 'center',
-    maxWidth: 300,
-  },
-  errorTitle: {
-    fontSize: 20,
-    fontWeight: '700',
-    color: '#1E293B',
-    marginTop: 20,
-    marginBottom: 12,
-  },
-  errorText: {
-    fontSize: 14,
-    color: '#64748B',
-    textAlign: 'center',
-    lineHeight: 22,
-    marginBottom: 24,
-  },
-  backButton: {
-    backgroundColor: '#3B82F6',
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 20,
-    paddingVertical: 12,
-    borderRadius: 12,
-    gap: 8,
-  },
-  backButtonText: {
-    color: '#FFFFFF',
-    fontSize: 16,
-    fontWeight: '600',
-  },
-  backButtonHeader: {
-    padding: 4,
-  },
-  header: {
-    backgroundColor: '#FFFFFF',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: '#F1F5F9',
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  headerLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    flex: 1,
-  },
-  examInfo: {
-    marginLeft: 12,
-    flex: 1,
-  },
-  examTitle: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#1E293B',
-  },
-  examSubtitle: {
-    fontSize: 12,
-    color: '#64748B',
-    marginTop: 2,
-  },
-  headerRight: {
-    marginLeft: 12,
-  },
-  timerContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#FEF2F2',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 20,
-    gap: 6,
-  },
-  timerText: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#EF4444',
-  },
-  proctoringStatusContainer: {
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    backgroundColor: '#F8FAFC',
-    borderBottomWidth: 1,
-    borderBottomColor: '#F1F5F9',
-  },
-  proctoringStatus: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-  },
-  proctoringStatusText: {
-    fontSize: 12,
-    color: '#64748B',
-    fontWeight: '500',
-  },
-  proctoringStatusTextActive: {
-    color: '#3B82F6',
-    fontWeight: '600',
-  },
-  proctoringTime: {
-    fontSize: 11,
-    color: '#94A3B8',
-    marginLeft: 4,
-  },
-  proctoringCount: {
-    fontSize: 11,
-    color: '#94A3B8',
-    fontWeight: '600',
-  },
-  violationBadge: {
-    backgroundColor: '#EF4444',
-    borderRadius: 10,
-    width: 20,
-    height: 20,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginLeft: 8,
-  },
-  violationText: {
-    fontSize: 10,
-    color: '#FFFFFF',
-    fontWeight: 'bold',
-  },
-  progressBarContainer: {
-    backgroundColor: '#FFFFFF',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: '#F1F5F9',
-  },
-  progressBar: {
-    height: 4,
-    backgroundColor: '#E2E8F0',
-    borderRadius: 2,
-    overflow: 'hidden',
-    marginBottom: 8,
-  },
-  progressFill: {
-    height: '100%',
-    backgroundColor: '#3B82F6',
-    borderRadius: 2,
-  },
-  progressText: {
-    fontSize: 12,
-    color: '#64748B',
-    textAlign: 'center',
-  },
-  questionsNavContainer: {
-    backgroundColor: '#FFFFFF',
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: '#F1F5F9',
-  },
-  questionsNavContent: {
-    paddingHorizontal: 12,
-    gap: 8,
-  },
-  questionNavItem: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: '#F1F5F9',
-    justifyContent: 'center',
-    alignItems: 'center',
-    position: 'relative',
-    borderWidth: 2,
-    borderColor: 'transparent',
-  },
-  questionNavItemActive: {
-    borderColor: '#3B82F6',
-    backgroundColor: '#EFF6FF',
-  },
-  questionNavItemAnswered: {
-    backgroundColor: '#D1FAE5',
-  },
-  questionNavItemFlagged: {
-    backgroundColor: '#FEE2E2',
-  },
-  questionNavNumber: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#64748B',
-  },
-  questionNavNumberActive: {
-    color: '#3B82F6',
-  },
-  questionNavNumberAnswered: {
-    color: '#059669',
-  },
-  questionNavNumberFlagged: {
-    color: '#EF4444',
-  },
-  questionNavIndicator: {
-    position: 'absolute',
-    bottom: 0,
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    borderWidth: 1,
-    borderColor: '#FFFFFF',
-  },
-  questionScrollView: {
-    flex: 1,
-  },
-  questionContainer: {
-    flex: 1,
-    backgroundColor: '#FFFFFF',
-    marginHorizontal: 16,
-    marginTop: 16,
-    marginBottom: 16,
-    borderRadius: 16,
-    padding: 20,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.05,
-    shadowRadius: 8,
-    elevation: 2,
-  },
-  questionHeader: {
-    marginBottom: 16,
-  },
-  questionNumberContainer: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-  },
-  questionNumberText: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: '#1E293B',
-    flex: 1,
-  },
-  questionMetaContainer: {
-    flexDirection: 'row',
-    gap: 8,
-    alignItems: 'center',
-  },
-  questionTypeBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#EFF6FF',
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 12,
-    gap: 4,
-  },
-  questionTypeText: {
-    fontSize: 11,
-    fontWeight: '600',
-    color: '#3B82F6',
-  },
-  marksBadge: {
-    backgroundColor: '#F0F9FF',
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 12,
-  },
-  marksText: {
-    fontSize: 11,
-    fontWeight: '600',
-    color: '#0EA5E9',
-  },
-  questionTextContainer: {
-    marginBottom: 24,
-  },
-  questionText: {
-    fontSize: 16,
-    color: '#1E293B',
-    lineHeight: 24,
-    letterSpacing: 0.2,
-  },
-  optionsContainer: {
-    marginBottom: 24,
-    gap: 8,
-  },
-  optionButton: {
-    backgroundColor: '#F8FAFC',
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    overflow: 'hidden',
-  },
-  optionSelected: {
-    backgroundColor: '#EFF6FF',
-    borderColor: '#3B82F6',
-  },
-  optionContent: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    padding: 16,
-  },
-  optionIndicator: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    borderWidth: 2,
-    borderColor: '#CBD5E1',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: 12,
-  },
-  optionIndicatorSelected: {
-    borderColor: '#3B82F6',
-    backgroundColor: '#3B82F6',
-  },
-  optionIndicatorInner: {
-    width: 14,
-    height: 14,
-    borderRadius: 7,
-    backgroundColor: '#FFFFFF',
-  },
-  optionTextContainer: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 8,
-  },
-  optionLabel: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#64748B',
-    marginTop: 2,
-  },
-  optionLabelSelected: {
-    color: '#3B82F6',
-  },
-  optionText: {
-    flex: 1,
-    fontSize: 14,
-    color: '#475569',
-    lineHeight: 20,
-  },
-  optionTextSelected: {
-    color: '#1E293B',
-    fontWeight: '500',
-  },
-  inputContainer: {
-    marginBottom: 24,
-  },
-  inputLabel: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#475569',
-    marginBottom: 8,
-  },
-  answerInput: {
-    backgroundColor: '#F8FAFC',
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    borderRadius: 12,
-    padding: 16,
-    fontSize: 16,
-    color: '#1E293B',
-    minHeight: 56,
-  },
-  answerInputSubjective: {
-    minHeight: 200,
-    textAlignVertical: 'top',
-  },
-  inputHint: {
-    fontSize: 12,
-    color: '#94A3B8',
-    marginTop: 8,
-    marginLeft: 4,
-  },
-  questionActions: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginTop: 8,
-    marginBottom: 16,
-  },
-  flagButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 8,
-    backgroundColor: '#F8FAFC',
-    gap: 6,
-  },
-  flagButtonActive: {
-    backgroundColor: '#FEF2F2',
-  },
-  flagButtonText: {
-    fontSize: 14,
-    color: '#64748B',
-  },
-  flagButtonTextActive: {
-    color: '#EF4444',
-    fontWeight: '600',
-  },
-  navigationButtons: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  navButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    borderRadius: 12,
-    backgroundColor: '#F8FAFC',
-    gap: 6,
-  },
-  navButtonNext: {
-    backgroundColor: '#3B82F6',
-  },
-  navButtonText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#3B82F6',
-  },
-  navButtonTextNext: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#FFFFFF',
-  },
-  saveStatusContainer: {
-    marginTop: 12,
-    paddingTop: 12,
-    borderTopWidth: 1,
-    borderTopColor: '#F1F5F9',
-  },
-  savingIndicator: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  savingText: {
-    fontSize: 12,
-    color: '#3B82F6',
-  },
-  savedIndicator: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  savedText: {
-    fontSize: 12,
-    color: '#64748B',
-  },
-  footer: {
-    backgroundColor: '#FFFFFF',
-    borderTopWidth: 1,
-    borderTopColor: '#F1F5F9',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  footerStats: {
-    flexDirection: 'row',
-    gap: 16,
-  },
-  footerStat: {
-    alignItems: 'center',
-  },
-  footerStatValue: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: '#10B981',
-  },
-  footerStatLabel: {
-    fontSize: 12,
-    color: '#64748B',
-    marginTop: 2,
-  },
-  quickSubmitButton: {
-    backgroundColor: '#3B82F6',
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 20,
-    paddingVertical: 10,
-    borderRadius: 12,
-    gap: 6,
-  },
-  quickSubmitText: {
-    color: '#FFFFFF',
-    fontSize: 14,
-    fontWeight: '600',
-  },
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 20,
-  },
-  modalContainer: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 20,
-    padding: 24,
-    width: '100%',
-    maxWidth: 400,
-    alignItems: 'center',
-  },
-  modalIcon: {
-    marginBottom: 16,
-  },
-  modalTitle: {
-    fontSize: 20,
-    fontWeight: '700',
-    color: '#1E293B',
-    marginBottom: 12,
-    textAlign: 'center',
-  },
-  modalText: {
-    fontSize: 14,
-    color: '#64748B',
-    textAlign: 'center',
-    lineHeight: 20,
-    marginBottom: 24,
-  },
-  modalStats: {
-    backgroundColor: '#F8FAFC',
-    borderRadius: 12,
-    padding: 16,
-    width: '100%',
-    marginBottom: 24,
-    gap: 12,
-  },
-  modalStatItem: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  modalStatLabel: {
-    fontSize: 14,
-    color: '#64748B',
-  },
-  modalStatValue: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#1E293B',
-  },
-  modalButtons: {
-    flexDirection: 'row',
-    width: '100%',
-    gap: 12,
-  },
-  modalButton: {
-    flex: 1,
-    paddingVertical: 14,
-    borderRadius: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  modalButtonCancel: {
-    backgroundColor: '#F1F5F9',
-  },
-  modalButtonSubmit: {
-    backgroundColor: '#10B981',
-    flexDirection: 'row',
-    gap: 8,
-  },
-  modalButtonCancelText: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#64748B',
-  },
-  modalButtonSubmitText: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#FFFFFF',
   },
 });

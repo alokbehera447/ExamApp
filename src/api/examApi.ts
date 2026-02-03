@@ -128,6 +128,7 @@ export interface Question {
   success_rate: string;
   images: any[];
   comments: any[];
+  structure?: any;
   created_at: string;
   updated_at: string;
 }
@@ -273,18 +274,18 @@ export interface ExamResult {
 }
 
 export const takeProctoringSnapshot = async (
-  attemptId: number, 
+  attemptId: number,
   snapshotData: SnapshotData
 ): Promise<SnapshotResponse> => {
   try {
     const token = await getAccessToken();
-    
+
     if (!token) {
       throw new Error("No access token found");
     }
 
     console.log(`Taking snapshot for attempt ${attemptId}...`);
-    
+
     const response = await axios.post(
       `${API_BASE_URL}/exams/attempts/${attemptId}/proctoring/snapshot/`,
       snapshotData,
@@ -305,17 +306,17 @@ export const takeProctoringSnapshot = async (
   }
 };
 
-// Get all questions for an exam
+// Get all questions for an exam (handles pagination automatically)
 export const getExamQuestions = async (attemptId: number, examId?: number): Promise<QuestionsResponse> => {
   try {
     const token = await getAccessToken();
-    
+
     if (!token) {
       throw new Error("No access token found");
     }
 
     let actualExamId = examId;
-    
+
     // If examId not provided, get it from the attempt
     if (!actualExamId) {
       console.log(`Getting exam ID from attempt ${attemptId}...`);
@@ -331,24 +332,39 @@ export const getExamQuestions = async (attemptId: number, examId?: number): Prom
       console.log(`Found exam ID: ${actualExamId} for attempt ${attemptId}`);
     }
 
-    console.log(`Fetching questions for exam ${actualExamId}...`);
-    
-    const response = await axios.get(
-      `${API_BASE_URL}/questions/questions/`,
-      {
-        params: {
-          exam: actualExamId
-        },
-        headers: {
-          "Authorization": `Bearer ${token}`,
-          "Content-Type": "application/json",
-          "Accept": "application/json",
-        },
-      }
-    );
+    let allQuestions: Question[] = [];
+    let nextUrl: string | null = `${API_BASE_URL}/questions/questions/?exam=${actualExamId}`;
+    let totalCount = 0;
 
-    console.log(`Found ${response.data.count} questions for exam ${actualExamId}`);
-    return response.data;
+    console.log(`Fetching all questions for exam ${actualExamId}...`);
+
+    while (nextUrl) {
+      const response: any = await axios.get(
+        nextUrl,
+        {
+          headers: {
+            "Authorization": `Bearer ${token}`,
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+          },
+        }
+      );
+
+      allQuestions = [...allQuestions, ...response.data.results];
+      totalCount = response.data.count;
+      nextUrl = response.data.next;
+
+      console.log(`Fetched ${allQuestions.length} of ${totalCount} questions...`);
+    }
+
+    console.log(`Total questions fetched: ${allQuestions.length}`);
+
+    return {
+      count: allQuestions.length,
+      next: null,
+      previous: null,
+      results: allQuestions
+    };
   } catch (error: any) {
     console.error(`Error fetching questions:`, error.response?.data || error.message);
     throw error;
@@ -358,7 +374,7 @@ export const getExamQuestions = async (attemptId: number, examId?: number): Prom
 export const autoSaveAnswer = async (attemptId: number, questionId: number, userAnswer: string, isFlagged: boolean = false) => {
   try {
     const token = await getAccessToken();
-    
+
     if (!token) {
       throw new Error("No access token found");
     }
@@ -395,7 +411,7 @@ export const submitAnswer = async (attemptId: number, questionId: number, answer
 export const submitMultipleAnswers = async (attemptId: number, answers: AnswerSubmission[]) => {
   try {
     const token = await getAccessToken();
-    
+
     if (!token) {
       throw new Error("No access token found");
     }
@@ -430,7 +446,7 @@ export const submitMultipleAnswers = async (attemptId: number, answers: AnswerSu
 export const submitExam = async (payload: SubmitExamPayload): Promise<SubmitExamResponse> => {
   try {
     const token = await getAccessToken();
-    
+
     if (!token) {
       throw new Error("No access token found");
     }
@@ -461,7 +477,7 @@ export const submitExam = async (payload: SubmitExamPayload): Promise<SubmitExam
 export const getSavedAnswers = async (attemptId: number) => {
   try {
     const token = await getAccessToken();
-    
+
     if (!token) {
       throw new Error("No access token found");
     }
@@ -488,13 +504,13 @@ export const getSavedAnswers = async (attemptId: number) => {
 export const getStudentDashboard = async (): Promise<StudentDashboardResponse> => {
   try {
     const token = await getAccessToken();
-    
+
     if (!token) {
       throw new Error("No access token found");
     }
 
     console.log('Fetching student dashboard...');
-    
+
     const response = await axios.get(
       `${API_BASE_URL}/exams/student-dashboard/`,
       {
@@ -518,7 +534,7 @@ export const getStudentDashboard = async (): Promise<StudentDashboardResponse> =
 export const getPublishedExams = async (): Promise<ExamsResponse> => {
   try {
     const token = await getAccessToken();
-    
+
     if (!token) {
       throw new Error("No access token found");
     }
@@ -544,18 +560,18 @@ export const getPublishedExams = async (): Promise<ExamsResponse> => {
 export const getUpcomingExams = async (): Promise<Exam[]> => {
   try {
     const response = await getPublishedExams();
-    
+
     const now = new Date();
-    
+
     const upcomingExams = response.results.filter(exam => {
       const endDate = new Date(exam.end_date);
       const isNotEnded = endDate > now;
-      
+
       return isNotEnded && exam.is_question_complete;
     }).sort((a, b) => {
       return new Date(a.start_date).getTime() - new Date(b.start_date).getTime();
     });
-    
+
     return upcomingExams;
   } catch (error) {
     console.error("Error fetching upcoming exams:", error);
@@ -567,7 +583,7 @@ export const getUpcomingExams = async (): Promise<Exam[]> => {
 export const getExamDetails = async (examId: number): Promise<Exam> => {
   try {
     const token = await getAccessToken();
-    
+
     if (!token) {
       throw new Error("No access token found");
     }
@@ -596,9 +612,9 @@ export const getExamDetails = async (examId: number): Promise<Exam> => {
 export const getAllActiveExams = async (): Promise<Exam[]> => {
   try {
     const response = await getPublishedExams();
-    
+
     const now = new Date();
-    
+
     return response.results.filter(exam => {
       const endDate = new Date(exam.end_date);
       return endDate > now && exam.is_question_complete;
@@ -614,7 +630,7 @@ export const getAllActiveExams = async (): Promise<Exam[]> => {
 export const startExam = async (examId: number): Promise<StartExamResponse> => {
   try {
     const token = await getAccessToken();
-    
+
     if (!token) {
       throw new Error("No access token found");
     }
@@ -646,7 +662,7 @@ export const startExam = async (examId: number): Promise<StartExamResponse> => {
 export const getExamAttempt = async (attemptId: number): Promise<ExamAttempt> => {
   try {
     const token = await getAccessToken();
-    
+
     if (!token) {
       throw new Error("No access token found");
     }
@@ -671,13 +687,13 @@ export const getExamAttempt = async (attemptId: number): Promise<ExamAttempt> =>
 export const getExamResults = async (attemptId: number): Promise<ExamResult> => {
   try {
     const token = await getAccessToken();
-    
+
     if (!token) {
       throw new Error("No access token found");
     }
 
     console.log(`Fetching results for attempt ${attemptId}...`);
-    
+
     const response = await axios.get(
       `${API_BASE_URL}/exams/attempts/${attemptId}/results/`,
       {
